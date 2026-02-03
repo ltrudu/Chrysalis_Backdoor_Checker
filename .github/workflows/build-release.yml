@@ -1,0 +1,90 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      matrix:
+        runtime: [win-x64, win-x86, win-arm64]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Restore dependencies
+        run: dotnet restore ChrysalisChecker.sln
+
+      - name: Build
+        run: dotnet build ChrysalisChecker.sln --configuration Release --no-restore
+
+      - name: Publish self-contained executable
+        run: |
+          dotnet publish src/ChrysalisChecker/ChrysalisChecker.csproj `
+            --configuration Release `
+            --runtime ${{ matrix.runtime }} `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:Version=${{ steps.version.outputs.version }} `
+            --output ./publish/${{ matrix.runtime }}
+
+      - name: Rename executable with runtime
+        shell: pwsh
+        run: |
+          $source = "./publish/${{ matrix.runtime }}/ChrysalisChecker.exe"
+          $dest = "./publish/${{ matrix.runtime }}/ChrysalisChecker-${{ matrix.runtime }}.exe"
+          Move-Item -Path $source -Destination $dest
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChrysalisChecker-${{ matrix.runtime }}
+          path: ./publish/${{ matrix.runtime }}/ChrysalisChecker-${{ matrix.runtime }}.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R ./artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            ./artifacts/ChrysalisChecker-win-x64/ChrysalisChecker-win-x64.exe
+            ./artifacts/ChrysalisChecker-win-x86/ChrysalisChecker-win-x86.exe
+            ./artifacts/ChrysalisChecker-win-arm64/ChrysalisChecker-win-arm64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
